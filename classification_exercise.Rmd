@@ -1,0 +1,248 @@
+---
+title: "Classification - Exercise 2"
+author: "Qunhang Li & Yanik Kipfer"
+output:
+  rmdformats::downcute:
+    lightbox: TRUE
+    use_bookdown: TRUE
+    number_sections: FALSE
+    code_folding: hide
+---
+<br>
+
+```{r setup, include=FALSE}
+library(rmdformats) # library for downcute html style
+knitr::opts_chunk$set(echo = TRUE,
+                      message = FALSE)
+```
+
+*This question should be answered using the Weekly data set, which is part of the ISLR package. This data is similar in nature to the Smarket data from this chapters lab, except that it contains 1,089 weekly returns for 21 years, from the beginning of 1990 to the end of 2010.*
+
+# Question A 
+
+**Produce some numerical and graphical summaries of the Weekly data. Do there appear to be any patterns?**
+
+Through the result of the cor() function, there are Three pieces of information.
+
+First, by looking at the summary statistics, we can deduce that the *Lag* and *Today* variables are quite similar to each other.
+
+Second, the only substantial correlation pattern occurs between the year and volume variable. By plotting the two variables, we can see this relationship more directly. Volume is increasing over time, which means that the number of shares traded yearly increased from 1990 to 2010.
+
+```{r}
+# load data
+library(ISLR)
+library(ggplot2)
+
+data <- data("Weekly")
+
+# numerical summaries
+
+  # summary of data
+summary(Weekly)
+
+  # Correlation matrix.
+cor(Weekly[,1:8])
+
+# grafical summaries
+
+  # plot scatter year - volume
+ggplot(data=Weekly,mapping = aes(x = Year, y = Volume)) + 
+  geom_point() + 
+  geom_smooth(method = "lm")
+```
+
+Third, as the data is about the stock market, we would expect there to be some significant correlation between the percentage return today and the other factors. But it seems that this kind of correlation doesn't exist.
+
+```{r}
+  # Scatterplot matrix.
+pairs(Weekly[,1:8],panel = panel.smooth)
+```
+
+# Question B
+
+**Use the full data set to perform a logistic regression with Direction as the response and the five lag variables plus Volume as predictors. Use the summary function to print the results. Do any of the predictors appear to be statistically significant? If so, which ones?**
+
+Yes, apart from the constant term, Lag2 is considered to be significant at 95% confidence interval.
+
+```{r}
+# run logistic regression
+logistic_fit = glm(Direction ~ Lag1+Lag2+Lag3+Lag4+Lag5+Volume,
+                   data=Weekly,
+                   family=binomial)
+
+# output results
+summary(logistic_fit)
+```
+
+
+# Question C
+
+**Compute the confusion matrix and overall fraction of correct predictions. Explain what the confusion matrix is telling you about the types of mistakes made by logistic regression.**
+
+With the help of the confusion matrix, we find the overall fraction of correct predictions to be 56.1%.
+
+```{r}
+attach(Weekly)
+
+# predict model
+logistic_probs = predict(logistic_fit, type="response")
+
+# The type="response" option tells R to output probabilities of the form P(Y = 1|X). contrasts() function indicates that R has created a dummy variable with a 1 for Up.
+contrasts(Direction)
+
+# create vector with prediction outputs
+logistic_preds = rep("Down", 1089) # Vector of 1089 "Down" elements.
+logistic_preds[logistic_probs>0.5] = "Up" # Change "Down" to up when probability > 0.5.
+
+# Create confusion matrix
+conf = table(logistic_preds,Direction)
+table(logistic_preds,Direction)
+
+# Accuracy: diagonal elements of the confusion matrix indicate correct predictions, while the off-diagonals represent incorrect predictions. mean() function can be used to compute the fraction of days for which the prediction was correct
+mean(logistic_preds == Direction)
+
+# or by hand
+sum(diag(as.matrix(conf)))/nrow(Weekly)
+```
+
+At the first glance it seems good, as the error rate is 43.9%, which is lower than 50%, the random rate. But we should not forget that this is just the training error rate, and the testing error rate is usually higher than the training one.
+
+So we divide the data into two parts, the data from 1990 to 2008 we use as a training set and the data from 2009 to 2010 as testing set. The results are disappointing. The testing error rate is 53.9%, which is higher than 50%, thus, this model doesn't reduce the error rate at all.
+
+A reason for the low performance might be that too many insignificant variables are included, which might cause this high error rate. Because they are insignificance this means that the information they provide contains too much noise. This inflates the variance of the model while the bias doesn't reduce in the meantime. So a reasonable plan is kick the insignificant variables out of the model.
+
+```{r}
+# Check the testing error rate
+# Training observations from 1990 to 2008.
+train = (Year<2009)
+
+# Test observations from 2009 to 2010.
+Test = Weekly[!train ,]
+Test_Direction= Direction[!train]
+
+# Logistic regression on training set.
+logistic_fit2 = glm(Direction ~ Lag1+Lag2+Lag3+Lag4+Lag5+Volume,
+                    data=Weekly,
+                    family=binomial, subset=train)
+
+# Predictions on the test set.
+logistic_probs2 = predict(logistic_fit2,Test, type="response")
+logistic_preds2 = rep("Down", 104) 
+logistic_preds2[logistic_probs2>0.5] = "Up" 
+
+# Confusion matrix.
+table(logistic_preds2,Test_Direction)
+
+# Accuracy
+mean(logistic_preds2 == Test_Direction)
+```
+# Question D
+
+**Now fit the logistic regression model using a training data period from 1990 to 2008, with Lag2 as the only predictor. Compute the confusion matrix and the overall fraction of correct predictions for the held out data (that is, the data from 2009 and 2010).**
+
+After adjusting the model, the accuracy increases, which means the testing error rate was reduced. So the conjecture about the mistake made in (c) is correct.
+
+```{r}
+# Training observations from 1990 to 2008.
+train = (Year<2009)
+
+# Test observations from 2009 to 2010.
+Test = Weekly[!train ,]
+Test_Direction= Direction[!train]
+
+# Logistic regression on training set.
+logistic_fit3 = glm(Direction ~ Lag2,
+                    data=Weekly,
+                    family=binomial,
+                    subset=train)
+
+# Predictions on the test set.
+logistic_probs3 = predict(logistic_fit3,Test, type="response")
+logistic_preds3 = rep("Down", 104) 
+logistic_preds3[logistic_probs3>0.5] = "Up" 
+
+# Confusion matrix.
+table(logistic_preds3,Test_Direction)
+
+# Accuracy
+mean(logistic_preds3 == Test_Direction)
+```
+
+# Question E
+
+**Next Repeat (c) and (d) using a Linear Probability Model. Compare the models**
+
+The results are almost the same.
+
+```{r}
+
+#b.2
+#create a numeric variable
+Weekly$Direction_num = rep(0, 1089) # Vector of 1089 "0" elements.
+Weekly$Direction_num[Weekly$Direction=="Up"] = 1 # Change "1" to up when direction is up.
+
+# run logistic regression
+logistic_fit_lpm = lm(Direction_num ~ Lag1+Lag2+Lag3+Lag4+Lag5+Volume,
+                      data=Weekly)
+# output results
+summary(logistic_fit_lpm)
+
+
+#c.2
+attach(Weekly)
+
+# predict model
+logistic_probs_lpm = predict(logistic_fit_lpm, type="response")
+
+# The type="response" option tells R to output probabilities of the form P(Y = 1|X). contrasts() function indicates that R has created a dummy variable with a 1 for Up.
+contrasts(Direction)
+
+# create vector with prediction outputs
+logistic_preds_lpm = rep("Down", 1089) # Vector of 1089 "Down" elements.
+logistic_preds_lpm[logistic_probs_lpm>0.5] = "Up" # Change "Down" to up when probability > 0.5.
+
+# Create confusion matrix
+conf = table(logistic_preds_lpm,Direction)
+table(logistic_preds_lpm,Direction)
+
+# Accuracy: diagonal elements of the confusion matrix indicate correct predictions, while the off-diagonals represent incorrect predictions. mean() function can be used to compute the fraction of days for which the prediction was correct
+mean(logistic_preds_lpm == Direction)
+
+
+# Check the testing error rate
+
+# Logistic regression on training set.
+logistic_fit2_lpm = glm(Direction_num~Lag1+Lag2+Lag3+Lag4+Lag5+Volume,
+                        data=Weekly,
+                        family=binomial,
+                        subset=train)
+
+# Predictions on the test set.
+logistic_probs2_lpm = predict(logistic_fit2_lpm,Test, type="response")
+logistic_preds2_lpm = rep("Down", 104) 
+logistic_preds2_lpm[logistic_probs2_lpm>0.5] = "Up" 
+
+# Confusion matrix.
+table(logistic_preds2_lpm,Test_Direction)
+
+# Accuracy
+mean(logistic_preds2_lpm == Test_Direction)
+
+##d.2
+
+# Logistic regression on training set.
+logistic_fit3_lpm = lm(Direction_num ~ Lag2,
+                       data=Weekly,
+                       subset=train)
+
+# Predictions on the test set.
+logistic_probs3_lpm = predict(logistic_fit3_lpm,Test, type="response")
+logistic_preds3_lpm = rep("Down", 104) 
+logistic_preds3_lpm[logistic_probs3_lpm>0.5] = "Up" 
+
+# Confusion matrix.
+table(logistic_preds3_lpm,Test_Direction)
+# Accuracy
+mean(logistic_preds3_lpm == Test_Direction)
+```
+
