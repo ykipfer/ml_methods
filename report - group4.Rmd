@@ -1,0 +1,391 @@
+---
+title: "Project - Group 4"
+author: "Yanik Kipfer & Qunhang Li"
+date: "April 24, 2021"
+output:
+  rmdformats::downcute:
+    lightbox: TRUE
+    use_bookdown: TRUE
+    number_sections: FALSE
+---
+
+# Part 1 - Pre-processing
+
+  Before model fitting, the first step is to do pre processing, which prepares the data for the next part.
+
+```{r eval=FALSE, include=FALSE}
+
+# install required packages
+packs <- c("VIM", "readr", "dplyr", "caret", "imputeMissings", "doParallel", 
+           "xgboost", "plyr", "randomForest", "recipes")
+lapply(packs, install.packages)
+
+# load libraries
+library(VIM)
+library(readr)
+library(dplyr) 
+library(caret)
+library(imputeMissings)
+library(doParallel)
+library(xgboost)
+library(plyr)
+library(randomForest)
+library(recipes)
+
+```
+
+## 1.1 Removing variables
+
+### 1.1.1 Near-zero variance variables
+
+  Near-zero variance variables are variables containing a very low frequency of unique values. These variables do not contain much information for the fitting procedure and removing them can significantly improves model performance.
+
+  To identify near-zero variance variables we use two criterias, $frecut$ and $uniquecut$.
+
+  The former is the cutoff for the ratio of the most common value to the second most common value.
+  
+  The latter is the cutoff for the percentage of distinct values out of the number of total samples.
+  
+  According to Kuhn and Johnson (2013, pp. 45) a rule of thumb is to set $freqcut$ to a value larger then 20 and $uniquecut$ to a low value of around 10%.
+
+```{r eval=FALSE}
+# Sparce variables
+sparse_vars <- nearZeroVar(training,freqCut = 95/5, uniqueCut = 10) 
+data_training <- training[,-sparse_vars]
+
+```
+
+### 1.1.2 Descriptive variables
+
+  Apart from sparse variables, we also look through the data and remove several descriptive variables.
+
+  Variable $id$ is just an unique signal for each observation without any information for the model. 
+Although other descriptive variables, such as $address$ and $descr$, also carry information, it's hard to quantify them.
+
+  The outcome variable is also removed to avoid it being involved in the imputation of the predictors.
+
+
+```{r eval=FALSE}
+# Descriptive variable(test data) and outcome
+predictors <- data_training[,-c(1,2,5,7,8,17)]
+
+```
+
+## 1.2 Converting variables
+
+  Then, we convert several categorical and date variables to factors, ensuring they will be treated as dummy variables in the model.
+
+```{r eval=FALSE}
+# Converting
+predictors$GDENR <- as.factor(predictors$GDENR)
+predictors$KTKZ <- as.factor(predictors$KTKZ)
+predictors$month <- as.factor(predictors$month)
+predictors$msregion <- as.factor(predictors$msregion)
+predictors$newly_built <- as.factor(predictors$newly_built)
+predictors$quarter_general <- as.factor(predictors$quarter_general)
+predictors$quarter_specific <- as.factor(predictors$quarter_specific)
+predictors$year_built <- as.factor(predictors$year_built)
+
+```
+
+## 1.3 Imputing Missing Values
+
+  The next part deals with missing data.
+  
+  For the imputation of the missing data we decided to use k-nearest neigbhors imputation. While this procedure takes significantly longer to compute, it is much more accurate, then simply using the mean and median, since it relies on observations similar to the missing data. Using this method we hope to get more accurate prediction results. 
+
+```{r eval=FALSE}
+# KNN imputation
+predictors_imputed <- kNN(predictors)
+
+# check if it worked
+summary(predictors_imputed,type="text")
+
+# remove imputation information
+predictors_imputed <- predictors_imputed[,1:39] 
+# start with loaded data from here
+```
+
+## 1.4 Multicollinearity
+
+Next, we deal with multicollinearity. 
+
+If two predictors are highly correlated, this implies that they are measuring the same underlying information. Removing one should not compromise the performance of the model and might lead to a more parsimonious and interpretable model, as well as faster computation times (Kuhn and Johnson, 2013, pp. 43)
+
+We first do a descriptive statistic using $cor()$ function to get an overview of which variables seem to correlate with each other. We then and select and remove one instance of highly correlated variable pair using $findCorrelation()$ function with a 0.7 cut-off.
+
+
+```{r eval=FALSE}
+# only select numeric vars
+nums <- unlist(lapply(predictors_imputed, is.numeric))  
+numeric <- predictors_imputed[ , nums]
+
+# check for correlation: rent_full is only highly correlated with rooms and area
+cor_data <- cbind(training$rent_full, numeric)
+correl <- cor(cor_data, use = "pairwise.complete.obs")
+corrplot::corrplot(correl, method = "pie")
+
+# select vars with high collinearity
+(highCorr <- findCorrelation(cor(numeric), cutoff = 0.7)) 
+# sets correlation cut-off at 0.7
+
+# delete these variables
+numeric <- numeric[-highCorr]
+nam <- colnames(numeric)
+
+data_model<- predictors_imputed[ , -which(names(predictors_imputed) %in% c(nam))]
+
+```
+
+## 1.5 Other manipulations
+
+  While we dealt with the multicollinearity problem for numerical variables, we also needed to remove categorical variables which seem to rely on $identical$ information.
+
+  We then combine the $response$ and remaining predictors into one dataset.
+
+  We also do a $one-hot$ encoding for factor variables. This is mainly done because the random forest model, cannot handle categorical predictors with more than 53 categories, such as the msregion variable. While this reduces the interpretability of the model, we are mainly concerned with an accurate predicition.
+
+
+```{r eval=FALSE}
+# identical factor variable
+data_model <- data_model[,-c(1,2,8,9)]
+ne
+# re-attach outcome to data
+outcome <- training$rent_full
+outcome <- as.data.frame(outcome)
+data_model <- cbind(outcome, data_model)
+
+# one-hot encoding of multicategorical variables
+data_model <- recipe(outcome ~ ., data = data_model) %>%
+  step_dummy(all_nominal(), one_hot = TRUE) %>% 
+  prep(data_model) %>%
+  bake(data_model)
+save(list = c("data_model"), file = "data_model.Rdata")
+
+```
+
+# Part 2 - Models
+  We used three models to predict the rent prices: Elastic Net, Random Forest and XGBoost. All three models were fit and validated through 10-fold Cross-Validation. 
+  
+  By using 10-fold cross-validation we are able to gain an indication of how well the model will fit a unseen data set. Furthermore, 10-fold cross-validation allows us to circumvent the drawbacks of the simple validation set approach (which tends to overestimate the test error rate ) and generally gives more accurate estimate of the test error rate than the Leave-One-Out Cross-Validation approach (higher variance then 10-fold Cross-Validation).
+
+## 2.1 Elastic Net
+
+We opted to start with an elastic net model, to get a baseline linear model apart from the two tree-based model below, since we don't know the complexity of the data in advance. 
+
+The elastic net model allows for a mix between ridge and lasso regression, whereby, the tuning parameter $\alpha$ is the decisive factor on how much ridge ($\alpha = 0$) or lasso ($\alpha = 1$)  the model will be. Moreover the $\lambda$ parameter determines the impact of the shrinkage parameter. We tuned the value of $\alpha$ and $\lambda$ through 10-fold cross-validation, where the tuning parameters were chosen based on their ability to achieve the lowest cross-validation error. 
+
+To deal with the different scales of the predictors we opted to center and scale all variables. Additionally, to deal with outliers we apply a spatial Sign transformation on the predictors. The spatial sign transformation transforms the predictors such that the new values all have the same distance to the center of the distribution. To avoid data leakage we apply the transformations on each resampling iteration separately.
+
+After fitting the model, the tuning parameters for the final elastic net model where:
+
+| Model         | RMSE     | alpha  | lambda   |
+| :------------ | :------- | :----- | :------- |
+| Elastic net   | 439.2223 | 0.55   | 0.821105 |
+
+```{r eval=FALSE}
+# set seed for reproducibility
+set.seed(1234)
+
+# allow for parallel computing
+cores <- detectCores()-1
+cl <- makePSOCKcluster(cores)
+
+# Elastic Net
+
+# 10-fold cross validation on unscaled data/ without outlier hadling
+control_enet <- trainControl(method = "cv", number = 10, preProcOptions = list("center","scale","spatialSign"))
+
+registerDoParallel(cl)
+# model fit
+elast.fit <- train(outcome~.,
+                   data = data_model,
+                   method = "glmnet",
+                   metric = "RMSE",
+                   trControl = control_enet)
+
+
+stopCluster(cl)
+
+# save model
+saveRDS(elast.fit,"elastic_net.rds")
+```
+
+## 2.2 Random Forest
+
+As a second model we decided to use a random forest model. Random forests are bagged decision trees models, which create a large number of decision tree which all produce a prediction of our response variable. 
+
+The predictions between the individual trees are uncorrelated to each other, since each time a split within a tree is considered, the algorithm picks a single predictor for the split from a random set of predictors. Decorrelating the trees makes the final prediction, which is gained by averaging the results of the individual trees, less variable and therefore more precise. Moreover, random forest models are capable of dealing with outliers and non-linear predictors so that not further transformation of the data is necessary.
+
+While random forest allows for a number of parameters to be tuned, we failed to tune the model due to excessive memory use. We, therefore were only able to run the model using the default $mtry = \frac{number\ of \ predictors}{3}$ value.
+
+
+```{r eval=FALSE}
+# Random Forest Regression
+
+# DISCLAIMER: Tried tuning the mytry parameter for the random forest model, however, due to excessive memory use
+# I was only able to calculate the default model.
+
+control_rf <- trainControl(method="cv", number=10, allowParallel = TRUE)
+tunegrid <- expand.grid(mtry=43)
+
+registerDoParallel(cl)
+
+
+rf_default <- train(outcome~., 
+                    data=data_model, 
+                    method='rf', 
+                    metric='RMSE', 
+                    tuneGrid=tunegrid, 
+                    trControl=control_rf)
+
+stopCluster(cl)
+
+# save model
+saveRDS(rf_default,"rf_model.rds")
+```
+
+## 2.3 XGBoost
+
+The final model we considered was the XGBoost model. XGBoost, like random forest, is also a decision-tree based algorithm. 
+
+Contrary to the random forest algorithm, however, XGBoost builds its trees sequentially. Each tree is grown using information from the previous tree, thereby, each model is trained to predict and reduce the residuals of the previous model. To do that it uses a gradient descent algorithm to minimize the loss when adding new models.
+
+The XGBoost allows us to tune various parameters:
+
+* nrounds (controls the maximum number of iterations)
+* max_depth (maximum depth of the decision trees being trained) 
+* colsample_bytree (defines what percentage of predictors will be used for building each tree)
+* eta (learning rate)
+* gamma (controls regularization and prevents overfitting)
+* min_child_weight (minimum number of instances required in a child node)
+* subsample (number of samples supplied to a tree.)
+
+We opted to only tune the nrounds, max_depth, colsample_bytree and the eta parameters. We expected an increase in max_depth to increase the complexity of the model, making it more able to pick up on interactions in the sample data, however, this also makes it prone to over-fitting. As such, the learning rate must also be tuned to shrink the feature weights after each round, thereby counteracting the over-fitting problem. Moreover only using a subset of predictors to grow the trees, will increase the robustness of the model, similar as with the random forest model.
+
+The final model's parameters are shown below:
+
+| Model         | nrounds     | max_depth  | eta   |colsample_bytree| gamma | min_child_weight | subsample
+| :------------ | :------- | :----- | :------- |:------- |:------- |:------- |:------- |
+| XGBoost   | 500 | 10   | 0.05 |0.5 |0|1|1
+
+```{r eval=FALSE}
+# XGBoost 
+control_xgb <- trainControl(method = "cv", number = 10, preProcOptions = list("center","scale"), allowParallel = TRUE)
+
+
+xgbGrid <- expand.grid(nrounds = c(100,200,500),  # max number of iterations
+                       max_depth = c(10, 15, 20, 25), # depth of tree: larger depth more complex model higher chances of overfitting tuned by cv
+                       colsample_bytree = seq(0.5, 0.9, length.out = 5),  # number of features supplied to a tree: typical between 0.5-0.9
+                       eta = c(0.01,0.05,0.1), # learning rate
+                       gamma=0,
+                       min_child_weight = 1,
+                       subsample = 1
+)
+
+registerDoParallel(cl)
+
+xgb_fit <- train(outcome ~., data = data_model, method = "xgbTree",
+                trControl=control_xgb,
+                objective="reg:squarederror",
+                tuneGrid = xgbGrid,
+                verbose = TRUE)
+
+stopCluster(cl)
+
+# save model
+saveRDS(xgb_fit,"xgb_model.rds")
+```
+
+Overall the three models performed as following:
+
+
+| Model         | RMSE     | R_sq    | MAE      |
+| :------------ | :------- | :------ | :------- |
+| Elastic net   | 439.2223 | 0.5819  | 286.2039 |
+| Random forest | 395.9289 | 0.6585  | 264.2191 |
+| XGBoost       | 389.2788 | 0.6700  | 258.1381 |
+
+In conclusion, $XGBoost$ was the model with the lowest RMSE, MAE and highest R_sq and ,thus, has the best performance. Therefore we choose it as the final model.
+
+# Part 3 - Prediction
+
+## 3.1 Testing data pre-processing
+
+  Before running our model on the test data, we first clean the data set using the $same$ steps in part one, including removing, converting, imputing missing values and so on.
+
+```{r eval=FALSE}
+# Load datasets
+test <- read_csv("X_test.csv")
+
+# Removing sparse variables
+sparse_vars_test <- nearZeroVar(test,freqCut = 95/5, uniqueCut = 10) 
+data_test <- test[,-sparse_vars_test]
+
+# remove text data and outcome
+predictors_test <- data_test[,-c(1,2,5,7,8)]
+
+# Convert categorical variables into factors
+predictors_test$GDENR <- as.factor(predictors_test$GDENR)
+predictors_test$KTKZ <- as.factor(predictors_test$KTKZ)
+predictors_test$month <- as.factor(predictors_test$month)
+predictors_test$msregion <- as.factor(predictors_test$msregion)
+predictors_test$newly_built <- as.factor(predictors_test$newly_built)
+predictors_test$quarter_general <- as.factor(predictors_test$quarter_general)
+predictors_test$quarter_specific <- as.factor(predictors_test$quarter_specific)
+predictors_test$year_built <- as.factor(predictors_test$year_built)
+
+# kNN imputation
+data_test_imputed <- kNN(predictors_test)
+
+# check if it worked
+summary(data_test_imputed)
+
+# remove imputation information
+data_test_imputed <- data_test_imputed[,1:39] 
+
+# save imputed data
+save(list = c("data_test_imputed"), file = "data_test_clean.Rdata")
+
+# select same vars as in the training set
+data_test_model<- data_test_imputed[ , which(names(data_test_imputed) 
+                                             %in% names(data_model))]
+
+# one-hot encoding of categorical variables
+data_test_model <- recipe( ~ ., data = data_test_model) %>%
+  step_dummy(all_nominal(), one_hot = TRUE) %>% 
+  prep(data_test_model) %>%
+  bake(data_test_model)
+
+# save final pre-processed data
+save(list = c("data_test_model"), file = "data_test_model.Rdata")
+
+```
+
+## 3.2 Plugging the dataset
+
+
+Lastly, we predict the response variable of the test data using the $XGBoost$ model. Here's its code for the prediction part.
+
+```{r eval=FALSE}
+# load xgboost model, which is the model that performed the best
+xgb_model<- readRDS("xgb_model_tuned.rds")
+
+# predict outcome of test data with xgboost model
+Y_test <- predict(xgb_model, newdata = data_test_model)
+
+# bind observation IDs and outcome data
+id <- test$id
+y_test <- cbind(id,Y_test)
+
+# save final prediction
+save(list = c("y_test"), file = "test_xgboost_outcome.Rdata")
+
+
+```
+
+# References
+
+Kuhn, M., & Johnson, K. (2013). Applied predictive modeling (Vol. 26). New York: Springer.
+
+James, G., Witten, D., Hastie, T., & Tibshirani, R. (2013). An introduction to statistical learning (Vol. 112, p. 18). New York: springer.
