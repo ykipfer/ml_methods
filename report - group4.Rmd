@@ -11,7 +11,7 @@ output:
 
 # Part 1 - Pre-processing
 
-  Before model fitting, the first step is to do pre processing, which prepares the data for the next part.
+  Before model fitting, the first step is to do pre-processing, which prepares the data for the next part.
 
 ```{r eval=FALSE, include=FALSE}
 
